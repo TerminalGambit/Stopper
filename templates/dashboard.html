@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Stopper – Habit Tracker</title>
+    <link rel="icon" type="image/png" href="https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/1f4aa.png">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <style>
+        .btn {
+            @apply transition-all duration-150 shadow-sm hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-400;
+        }
+        .card {
+            @apply transition-all duration-150 hover:scale-[1.01] hover:shadow-xl;
+        }
+        .progress-bar {
+            transition: width 0.5s;
+        }
+        @keyframes bounce-in {
+          0% { transform: scale(0.7); opacity: 0; }
+          60% { transform: scale(1.1); opacity: 1; }
+          100% { transform: scale(1); }
+        }
+        .animate-bounce-in { animation: bounce-in 0.5s; }
+    </style>
+</head>
+<body class="{{ 'bg-gray-900 text-gray-100' if dark_mode else 'bg-gray-100' }} min-h-screen">
+<div class="max-w-2xl mx-auto py-10 px-2 sm:px-4">
+    <div class="flex flex-col sm:flex-row justify-between items-center mb-4 gap-2">
+        <h1 class="text-4xl font-bold text-center text-blue-700 {{ 'text-blue-300' if dark_mode else '' }} flex items-center gap-2">
+            <img src="https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/1f4aa.png" alt="Stopper" class="w-8 h-8 inline-block"> Stopper
+        </h1>
+        <form method="get" action="/toggle_dark_mode">
+            <button type="submit" class="ml-4 px-3 py-1 rounded {{ 'bg-gray-700 text-white' if dark_mode else 'bg-gray-200 text-gray-800' }} hover:bg-blue-500 hover:text-white btn">{{ '☀️' if dark_mode else '🌙' }}</button>
+        </form>
+    </div>
+    <div class="flex flex-wrap gap-2 mb-6">
+        <a href="/export/json" class="bg-green-500 hover:bg-green-600 text-white px-3 py-1 rounded btn">Export JSON</a>
+        <a href="/export/csv" class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded btn">Export CSV</a>
+        <a href="/weekly_digest" class="bg-purple-500 hover:bg-purple-600 text-white px-3 py-1 rounded btn">Weekly Digest</a>
+    </div>
+    <form method="get" action="{{ url_for('filter_habits') }}" class="flex flex-wrap justify-end mb-6 gap-2">
+        <select name="type" class="border rounded px-2 py-1">
+            <option value="">All Types</option>
+            <option value="consistency">Consistency</option>
+            <option value="quit">Quit</option>
+        </select>
+        <select name="tag" class="border rounded px-2 py-1">
+            <option value="">All Tags</option>
+            {% for tag in tags %}
+                <option value="{{ tag }}">{{ tag }}</option>
+            {% endfor %}
+        </select>
+        <button type="submit" class="bg-blue-500 text-white px-3 py-1 rounded btn">Filter</button>
+    </form>
+    <div class="flex justify-end mb-6">
+        <a href="{{ url_for('add_habit') }}" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded shadow btn">Add New Habit</a>
+    </div>
+    {% if unlogged and unlogged|length > 0 %}
+    <div id="reminder-banner" class="bg-red-100 border-l-4 border-red-400 text-red-700 p-4 mb-6 rounded flex items-center justify-between">
+        <div>
+            <span class="font-bold">Reminder:</span> You have habits to log today:
+            {% for h in unlogged %}
+                <a href="#habit-{{ h.id }}" class="underline hover:text-red-900 font-semibold">{{ h.name }}</a>{% if not loop.last %}, {% endif %}
+            {% endfor %}
+        </div>
+        <button onclick="document.getElementById('reminder-banner').style.display='none'" class="ml-4 px-2 py-1 rounded bg-red-200 hover:bg-red-300 btn">Dismiss</button>
+    </div>
+    {% endif %}
+    {% if quote %}
+    <div class="bg-yellow-100 border-l-4 border-yellow-400 text-yellow-700 p-4 mb-6 text-center rounded">
+        <span class="italic">"{{ quote }}"</span>
+    </div>
+    {% endif %}
+    {% if habits %}
+        {% set active_habits = habits|selectattr('archived', 'equalto', False)|list %}
+        {% set archived_habits = habits|selectattr('archived', 'equalto', True)|list %}
+        {% if active_habits %}
+        <ul class="space-y-4">
+        {% for habit in active_habits %}
+            <li id="habit-{{ habit.id }}" class="bg-white p-6 rounded-lg shadow flex flex-col gap-2 relative card">
+                <div class="flex items-center justify-between mb-1">
+                    <div class="flex items-center gap-2">
+                        <span class="text-xl font-semibold text-gray-800"><a href="{{ url_for('habit_detail', habit_id=habit.id) }}" class="hover:underline">{{ habit.name }}</a></span>
+                        {% if habit.type == 'consistency' %}
+                            <span class="inline-block" title="Consistency Habit">📈</span>
+                        {% else %}
+                            <span class="inline-block" title="Quit Habit">🚫</span>
+                        {% endif %}
+                    </div>
+                    <span class="px-2 py-1 rounded text-xs font-bold {{ 'bg-green-100 text-green-700' if habit.type == 'consistency' else 'bg-red-100 text-red-700' }}">
+                        {{ habit.type|capitalize }}
+                    </span>
+                </div>
+                <div class="flex flex-wrap gap-4 text-sm text-gray-600 mb-1">
+                    <div title="Start Date"><span class="font-semibold">Start:</span> {{ habit.start_date }}</div>
+                    <div title="Target"><span class="font-semibold">Target:</span> {{ habit.target }}</div>
+                    {% if habit.logs %}
+                    <div title="Current Streak">
+                        <span class="font-semibold">🔥 Streak:</span> {{ (habit.logs|length) }}
+                    </div>
+                    {% endif %}
+                </div>
+                {% if habit.notes %}
+                <div class="text-gray-400 text-xs mt-1">{{ habit.notes }}</div>
+                {% endif %}
+                {% if habit.tags %}
+                <div class="flex flex-wrap gap-1 mt-1">
+                    {% for tag in habit.tags %}
+                        <span class="bg-blue-100 text-blue-700 text-xs px-2 py-0.5 rounded">#{{ tag }}</span>
+                    {% endfor %}
+                </div>
+                {% endif %}
+                <div class="flex flex-wrap gap-2 mt-2">
+                    <form method="post" action="/log/{{ habit.id }}/done" title="Mark as done today">
+                        <button type="submit" class="bg-green-500 hover:bg-green-600 text-white px-3 py-1 rounded btn">Done Today</button>
+                    </form>
+                    <form method="post" action="/log/{{ habit.id }}/fail" title="Mark as failed today">
+                        <button type="submit" class="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded btn">Failed Today</button>
+                    </form>
+                    <form method="post" action="/delete/{{ habit.id }}" onsubmit="return confirm('Delete this habit?');" title="Delete habit">
+                        <button type="submit" class="bg-gray-300 hover:bg-gray-400 text-gray-800 px-3 py-1 rounded btn">Delete</button>
+                    </form>
+                    <form method="post" action="/archive/{{ habit.id }}">
+                        <button type="submit" class="bg-yellow-400 hover:bg-yellow-500 text-white px-3 py-1 rounded btn">Archive</button>
+                    </form>
+                    <form method="get" action="/edit/{{ habit.id }}">
+                        <button type="submit" class="bg-indigo-400 hover:bg-indigo-500 text-white px-3 py-1 rounded btn">Edit</button>
+                    </form>
+                </div>
+                <div class="mt-4">
+                    <div class="font-semibold text-xs text-gray-500 mb-1 flex items-center gap-2">
+                        Consistency Chart
+                        <span class="flex gap-1 text-xs">
+                            <span class="w-4 h-4 rounded bg-green-500 inline-block" title="Success (Done)"></span>
+                            <span class="w-4 h-4 rounded bg-red-500 inline-block" title="Failed"></span>
+                            <span class="w-4 h-4 rounded bg-yellow-300 inline-block" title="Untracked"></span>
+                        </span>
+                    </div>
+                    <div id="heatmap-{{ habit.id }}" class="mb-2"></div>
+                    {% if habit.type == 'consistency' and habit.target and habit.logs %}
+                    {% set week_logs = [] %}
+                    {% for log in habit.logs %}
+                        {% set _year = log[:4]|int %}
+                        {% set _week = log|slice(5,2)|int %}
+                        {% if _year == current_year and _week == current_week %}
+                            {% set _ = week_logs.append(log) %}
+                        {% endif %}
+                    {% endfor %}
+                    {% set progress = (week_logs|length / (habit.target|replace('x/week','')|int if 'x/week' in habit.target else 7)) * 100 %}
+                    <div class="w-full bg-gray-200 rounded h-3 mt-2">
+                        <div class="bg-blue-500 h-3 rounded progress-bar" style="width: {{ progress|round(0, 'floor') }}%"></div>
+                    </div>
+                    <div class="text-xs text-gray-500 mt-1">Weekly Progress</div>
+                    {% endif %}
+                </div>
+            </li>
+        {% endfor %}
+        </ul>
+        {% else %}
+        <div class="bg-white p-6 rounded-lg shadow text-center text-gray-500 card">
+            No habits yet. <a href="{{ url_for('add_habit') }}" class="text-blue-600 hover:underline">Add your first habit</a>!
+        </div>
+        {% endif %}
+        {% if archived_habits %}
+        <div class="mt-10">
+            <h2 class="text-lg font-bold mb-2 text-gray-700">Archived Habits</h2>
+            <ul class="space-y-2">
+            {% for habit in archived_habits %}
+                <li class="bg-gray-200 p-4 rounded flex items-center justify-between card">
+                    <span class="font-semibold">{{ habit.name }}</span>
+                    <form method="post" action="/restore/{{ habit.id }}">
+                        <button type="submit" class="bg-blue-400 hover:bg-blue-500 text-white px-3 py-1 rounded btn">Restore</button>
+                    </form>
+                </li>
+            {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+        <div class="bg-white p-6 rounded-lg shadow mt-8 card">
+            <div class="font-semibold text-lg mb-2 flex items-center gap-2">Overall Progression <span title="Line chart of all completions"><svg class="w-5 h-5 text-blue-500 inline-block" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 17l6-6 4 4 8-8"/></svg></span></div>
+            <div id="progression-chart" style="height:300px;"></div>
+        </div>
+        <div class="bg-white p-6 rounded-lg shadow mt-8 card">
+            <div class="font-semibold text-lg mb-2 flex items-center gap-2">Streak Distribution <span title="Histogram of streak lengths"><svg class="w-5 h-5 text-orange-500 inline-block" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 17v2m4-6v6m4-10v10m4-14v14m4-18v18"/></svg></span></div>
+            <div id="streak-histogram" style="height:250px;"></div>
+        </div>
+        <div class="bg-white p-6 rounded-lg shadow mt-8 card">
+            <div class="font-semibold text-lg mb-2 flex items-center gap-2">Completion Rate Over Time <span title="% of days completed per week"><svg class="w-5 h-5 text-green-500 inline-block" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h8m-8 6h16"/></svg></span></div>
+            <div id="completion-rate-chart" style="height:250px;"></div>
+        </div>
+        <div class="bg-white p-6 rounded-lg shadow mt-8 card">
+            <div class="font-semibold text-lg mb-2 flex items-center gap-2">Failure Rate Trend <span title="Failures per week"><svg class="w-5 h-5 text-red-500 inline-block" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg></span></div>
+            <div id="failure-rate-chart" style="height:250px;"></div>
+        </div>
+        <div class="bg-white p-6 rounded-lg shadow mt-8 card">
+            <div class="font-semibold text-lg mb-2 flex items-center gap-2">Completion Correlation Matrix <span title="Correlation of completions between habits"><svg class="w-5 h-5 text-pink-500 inline-block" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2" fill="none"/><path stroke-linecap="round" stroke-linejoin="round" d="M8 12h8M12 8v8"/></svg></span></div>
+            <div id="correlation-matrix" style="height:350px;"></div>
+        </div>
+        <div class="bg-white p-6 rounded-lg shadow mt-8 card">
+            <div class="font-semibold text-lg mb-2 flex items-center gap-2">Rolling Average Completions <span title="7-day and 30-day moving average"><svg class="w-5 h-5 text-cyan-500 inline-block" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 17l6-6 4 4 8-8"/></svg></span></div>
+            <div id="rolling-average-chart" style="height:250px;"></div>
+        </div>
+        <div class="bg-white p-6 rounded-lg shadow mt-8 card">
+            <form id="compare-form" class="mb-4 flex flex-wrap gap-2 items-center">
+                <span class="font-semibold text-gray-700">Compare Habits:</span>
+                {% for habit in habits %}
+                    <label class="flex items-center gap-1">
+                        <input type="checkbox" name="compare" value="{{ habit.id }}" class="form-checkbox rounded text-blue-600">
+                        <span>{{ habit.name }}</span>
+                    </label>
+                {% endfor %}
+                <button type="button" id="compare-btn" class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded btn">Show</button>
+            </form>
+            <div id="compare-chart" style="height:300px;"></div>
+        </div>
+    {% else %}
+        <div class="bg-white p-6 rounded-lg shadow text-center text-gray-500 card">
+            No habits yet. <a href="{{ url_for('add_habit') }}" class="text-blue-600 hover:underline">Add your first habit</a>!
+        </div>
+    {% endif %}
+</div>
+<div id="milestone-modal" class="fixed inset-0 flex items-center justify-center bg-black bg-opacity-40 z-50 hidden">
+  <div class="bg-white rounded-lg shadow-lg p-8 max-w-sm text-center animate-bounce-in">
+    <div class="text-4xl mb-2">🏆</div>
+    <div class="text-xl font-bold text-green-700 mb-2">Milestone Achieved! <span title="Milestone" class="inline-block">🎯</span></div>
+    <div class="text-lg text-gray-700 mb-4" id="milestone-message"></div>
+    <button onclick="document.getElementById('milestone-modal').classList.add('hidden')" class="mt-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-1 px-6 rounded shadow btn">Close</button>
+  </div>
+</div>
+<script>
+// Helper to get all days between two dates
+function getDaysArray(start, end) {
+    for(var arr=[],dt=new Date(start); dt<=end; dt.setDate(dt.getDate()+1)){
+        arr.push(new Date(dt));
+    }
+    return arr;
+}
+function renderHeatmap(containerId, logs, startDate, failures) {
+    const today = new Date();
+    const start = new Date(startDate);
+    const days = getDaysArray(start, today);
+    const weeks = Math.ceil(days.length / 7);
+    let grid = Array.from({length: weeks}, () => Array(7).fill('untracked'));
+    logs = logs || [];
+    failures = failures || [];
+    days.forEach((date, idx) => {
+        const week = Math.floor(idx / 7);
+        const day = date.getDay();
+        const dateStr = date.toISOString().slice(0,10);
+        if (logs.includes(dateStr)) {
+            grid[week][day] = 'success';
+        } else if (failures.includes(dateStr)) {
+            grid[week][day] = 'fail';
+        }
+    });
+    let html = '<div class="flex">';
+    for (let w = 0; w < weeks; w++) {
+        html += '<div class="flex flex-col mr-1">';
+        for (let d = 0; d < 7; d++) {
+            let color = grid[w][d] === 'success' ? 'bg-green-500' : (grid[w][d] === 'fail' ? 'bg-red-500' : 'bg-yellow-300');
+            let tooltip = grid[w][d] === 'success' ? 'Success' : (grid[w][d] === 'fail' ? 'Failed' : 'Untracked');
+            html += `<div class="w-4 h-4 m-0.5 rounded ${color}" title="${tooltip}"></div>`;
+        }
+        html += '</div>';
+    }
+    html += '</div>';
+    document.getElementById(containerId).innerHTML = html;
+}
+let allHabitsData = [];
+fetch('/progression_data')
+  .then(res => res.json())
+  .then(habits => {
+    console.log('Fetched habits:', habits);
+    allHabitsData = habits;
+    if (!Array.isArray(habits) || habits.length === 0) {
+      console.error('No habits found or habits is not an array.');
+      return;
+    }
+    // Render heatmaps
+    habits.forEach(habit => {
+      if (!habit || !habit.id) {
+        console.error('Habit missing or missing id:', habit);
+        return;
+      }
+      if (!habit.logs) habit.logs = [];
+      if (!habit.failures) habit.failures = [];
+      if (!habit.start_date) {
+        console.error('Habit missing start_date:', habit);
+        return;
+      }
+      try {
+        renderHeatmap('heatmap-' + habit.id, habit.logs, habit.start_date, habit.failures);
+      } catch (e) {
+        console.error('Error rendering heatmap for habit', habit.id, e);
+      }
+    });
+    // Progression chart
+    let dateCounts1 = {};
+    habits.forEach(habit => {
+      if (!habit.logs) return;
+      habit.logs.forEach(date => {
+        if (!date) {
+          console.warn('Empty date in logs for habit', habit.id);
+          return;
+        }
+        dateCounts1[date] = (dateCounts1[date]||0) + 1;
+      });
+    });
+    let dates1 = Object.keys(dateCounts1).sort();
+    let counts1 = dates1.map(d => dateCounts1[d]);
+    console.log('Progression chart dates:', dates1);
+    console.log('Progression chart counts:', counts1);
+    try {
+      Plotly.newPlot('progression-chart', [{
+        x: dates1,
+        y: counts1,
+        type: 'scatter',
+        mode: 'lines+markers',
+        line: {shape: 'hv', color: '#2563eb'},
+        marker: {color: '#2563eb'}
+      }], {
+        margin: {t: 20, r: 10, l: 40, b: 40},
+        xaxis: {title: 'Date'},
+        yaxis: {title: 'Habits Completed'},
+        plot_bgcolor: '#f3f4f6',
+        paper_bgcolor: '#f3f4f6',
+        font: {family: 'Inter, sans-serif'}
+      });
+    } catch (e) {
+      console.error('Error rendering progression chart:', e);
+    }
+    // Streak Distribution Histogram
+    function getStreaks(logs) {
+      if (!logs || logs.length === 0) return [];
+      logs = logs.slice().sort();
+      let streaks = [], streak = 1, prev = new Date(logs[0]);
+      for (let i = 1; i < logs.length; i++) {
+        let curr = new Date(logs[i]);
+        if ((curr - prev) / (1000*60*60*24) === 1) {
+          streak++;
+        } else {
+          streaks.push(streak);
+          streak = 1;
+        }
+        prev = curr;
+      }
+      streaks.push(streak);
+      return streaks;
+    }
+    let allStreaks = [];
+    habits.forEach(habit => {
+      let streaks = getStreaks(habit.logs);
+      if (!Array.isArray(streaks)) {
+        console.error('Streaks not array for habit', habit.id, streaks);
+      }
+      allStreaks = allStreaks.concat(streaks);
+    });
+    console.log('All streaks:', allStreaks);
+    try {
+      Plotly.newPlot('streak-histogram', [{
+        x: allStreaks,
+        type: 'histogram',
+        marker: {color: '#f59e42'},
+        opacity: 0.85
+      }], {
+        margin: {t: 20, r: 10, l: 40, b: 40},
+        xaxis: {title: 'Streak Length (days)'},
+        yaxis: {title: 'Count'},
+        plot_bgcolor: '#f3f4f6',
+        paper_bgcolor: '#f3f4f6',
+        font: {family: 'Inter, sans-serif'}
+      });
+    } catch (e) {
+      console.error('Error rendering streak histogram:', e);
+    }
+    // Completion Rate Over Time (weekly)
+    let weekMap = {};
+    habits.forEach(habit => {
+      (habit.logs||[]).forEach(date => {
+        let d = new Date(date);
+        if (isNaN(d)) {
+          console.warn('Invalid date in logs for habit', habit.id, date);
+          return;
+        }
+        let year = d.getFullYear();
+        let week = parseInt((d.getTime() - new Date(year,0,1).getTime())/(1000*60*60*24*7));
+        let key = `${year}-W${week}`;
+        if (!weekMap[key]) weekMap[key] = {done: 0, total: 0};
+        weekMap[key].done++;
+      });
+      (habit.failures||[]).forEach(date => {
+        let d = new Date(date);
+        if (isNaN(d)) {
+          console.warn('Invalid date in failures for habit', habit.id, date);
+          return;
+        }
+        let year = d.getFullYear();
+        let week = parseInt((d.getTime() - new Date(year,0,1).getTime())/(1000*60*60*24*7));
+        let key = `${year}-W${week}`;
+        if (!weekMap[key]) weekMap[key] = {done: 0, total: 0};
+      });
+    });
+    Object.keys(weekMap).forEach(key => { weekMap[key].total = habits.length * 7; });
+    let weeks = Object.keys(weekMap).sort();
+    let completionRates = weeks.map(w => weekMap[w].done / weekMap[w].total * 100);
+    console.log('Weeks:', weeks);
+    console.log('Completion rates:', completionRates);
+    try {
+      Plotly.newPlot('completion-rate-chart', [{
+        x: weeks,
+        y: completionRates,
+        type: 'scatter',
+        mode: 'lines+markers',
+        line: {color: '#22c55e'},
+        marker: {color: '#22c55e'}
+      }], {
+        margin: {t: 20, r: 10, l: 40, b: 40},
+        xaxis: {title: 'Week'},
+        yaxis: {title: 'Completion Rate (%)', range: [0, 100]},
+        plot_bgcolor: '#f3f4f6',
+        paper_bgcolor: '#f3f4f6',
+        font: {family: 'Inter, sans-serif'}
+      });
+    } catch (e) {
+      console.error('Error rendering completion rate chart:', e);
+    }
+    // Failure Rate Trend (weekly)
+    let failMap = {};
+    habits.forEach(habit => {
+      (habit.failures||[]).forEach(date => {
+        let d = new Date(date);
+        if (isNaN(d)) {
+          console.warn('Invalid date in failures for habit', habit.id, date);
+          return;
+        }
+        let year = d.getFullYear();
+        let week = parseInt((d.getTime() - new Date(year,0,1).getTime())/(1000*60*60*24*7));
+        let key = `${year}-W${week}`;
+        if (!failMap[key]) failMap[key] = 0;
+        failMap[key]++;
+      });
+    });
+    let failWeeks = Object.keys(failMap).sort();
+    let failCounts = failWeeks.map(w => failMap[w]);
+    console.log('Failure weeks:', failWeeks);
+    console.log('Failure counts:', failCounts);
+    try {
+      Plotly.newPlot('failure-rate-chart', [{
+        x: failWeeks,
+        y: failCounts,
+        type: 'bar',
+        marker: {color: '#ef4444'}
+      }], {
+        margin: {t: 20, r: 10, l: 40, b: 40},
+        xaxis: {title: 'Week'},
+        yaxis: {title: 'Failures'},
+        plot_bgcolor: '#f3f4f6',
+        paper_bgcolor: '#f3f4f6',
+        font: {family: 'Inter, sans-serif'}
+      });
+    } catch (e) {
+      console.error('Error rendering failure rate chart:', e);
+    }
+    // Correlation Matrix (if multiple habits)
+    if (habits.length > 1) {
+      let allDates = new Set();
+      habits.forEach(h => (h.logs||[]).forEach(d => allDates.add(d)));
+      allDates = Array.from(allDates).sort();
+      let habitVectors = habits.map(h => allDates.map(date => (h.logs||[]).includes(date) ? 1 : 0));
+      function corr(a, b) {
+        let n = a.length, sumA = 0, sumB = 0, sumAB = 0, sumA2 = 0, sumB2 = 0;
+        for (let i = 0; i < n; i++) {
+          sumA += a[i]; sumB += b[i]; sumAB += a[i]*b[i]; sumA2 += a[i]*a[i]; sumB2 += b[i]*b[i];
+        }
+        let num = n*sumAB - sumA*sumB;
+        let den = Math.sqrt((n*sumA2-sumA*sumA)*(n*sumB2-sumB*sumB));
+        return den === 0 ? 0 : num/den;
+      }
+      let z = [];
+      for (let i = 0; i < habits.length; i++) {
+        let row = [];
+        for (let j = 0; j < habits.length; j++) {
+          row.push(corr(habitVectors[i], habitVectors[j]));
+        }
+        z.push(row);
+      }
+      let names = habits.map(h => h.name);
+      console.log('Correlation matrix:', z);
+      try {
+        Plotly.newPlot('correlation-matrix', [{
+          z: z,
+          x: names,
+          y: names,
+          type: 'heatmap',
+          colorscale: 'RdBu',
+          zmin: -1,
+          zmax: 1,
+          colorbar: {title: 'Correlation'}
+        }], {
+          margin: {t: 40, r: 10, l: 80, b: 80},
+          xaxis: {title: 'Habit'},
+          yaxis: {title: 'Habit'},
+          plot_bgcolor: '#f3f4f6',
+          paper_bgcolor: '#f3f4f6',
+          font: {family: 'Inter, sans-serif'}
+        });
+      } catch (e) {
+        console.error('Error rendering correlation matrix:', e);
+      }
+    }
+    // Rolling Averages (7-day and 30-day)
+    let allDates2 = new Set();
+    habits.forEach(h => (h.logs||[]).forEach(d => allDates2.add(d)));
+    allDates2 = Array.from(allDates2).sort();
+    let dateCounts2 = {};
+    allDates2.forEach(date => { dateCounts2[date] = 0; });
+    habits.forEach(habit => {
+      (habit.logs||[]).forEach(date => { if (dateCounts2[date] !== undefined) dateCounts2[date]++; });
+    });
+    let dates2 = Object.keys(dateCounts2).sort();
+    let counts2 = dates2.map(d => dateCounts2[d]);
+    function movingAvg(arr, window) {
+      let res = [];
+      for (let i = 0; i < arr.length; i++) {
+        let start = Math.max(0, i-window+1);
+        let avg = arr.slice(start, i+1).reduce((a,b) => a+b, 0) / (i-start+1);
+        res.push(avg);
+      }
+      return res;
+    }
+    let avg7 = movingAvg(counts2, 7);
+    let avg30 = movingAvg(counts2, 30);
+    console.log('Rolling avg 7:', avg7);
+    console.log('Rolling avg 30:', avg30);
+    try {
+      Plotly.newPlot('rolling-average-chart', [
+        {x: dates2, y: avg7, type: 'scatter', mode: 'lines', name: '7-day', line: {color: '#06b6d4'}},
+        {x: dates2, y: avg30, type: 'scatter', mode: 'lines', name: '30-day', line: {color: '#6366f1'}}
+      ], {
+        margin: {t: 20, r: 10, l: 40, b: 40},
+        xaxis: {title: 'Date'},
+        yaxis: {title: 'Avg Completions'},
+        plot_bgcolor: '#f3f4f6',
+        paper_bgcolor: '#f3f4f6',
+        font: {family: 'Inter, sans-serif'}
+      });
+    } catch (e) {
+      console.error('Error rendering rolling average chart:', e);
+    }
+  });
+// Milestone celebration modal
+function getQueryParam(name) {
+  return new URLSearchParams(window.location.search).get(name);
+}
+const milestone = getQueryParam('milestone');
+if (milestone) {
+  document.getElementById('milestone-modal').classList.remove('hidden');
+  document.getElementById('milestone-message').textContent = `You reached a ${milestone}! Keep it up!`;
+}
+document.addEventListener('DOMContentLoaded', function() {
+  const compareBtn = document.getElementById('compare-btn');
+  if (compareBtn) {
+    compareBtn.onclick = function() {
+      const checked = Array.from(document.querySelectorAll('input[name="compare"]:checked')).map(cb => cb.value);
+      const traces = [];
+      checked.forEach(id => {
+        const habit = allHabitsData.find(h => h.id === id);
+        if (habit) {
+          let dateCounts3 = {};
+          (habit.logs||[]).forEach(date => { dateCounts3[date] = (dateCounts3[date]||0) + 1; });
+          let dates3 = Object.keys(dateCounts3).sort();
+          let counts3 = dates3.map(d => dateCounts3[d]);
+          traces.push({
+            x: dates3,
+            y: counts3,
+            type: 'scatter',
+            mode: 'lines+markers',
+            name: habit.name
+          });
+        }
+      });
+      Plotly.newPlot('compare-chart', traces, {
+        margin: {t: 20, r: 10, l: 40, b: 40},
+        xaxis: {title: 'Date'},
+        yaxis: {title: 'Completions'},
+        plot_bgcolor: '#f3f4f6',
+        paper_bgcolor: '#f3f4f6',
+        font: {family: 'Inter, sans-serif'}
+      });
+    };
+  }
+});
+</script>
+</body>
+</html> 

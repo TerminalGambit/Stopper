@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ habit.name }} - Habit Details</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+</head>
+<body class="{{ 'bg-gray-900 text-gray-100' if dark_mode else 'bg-gray-100' }} min-h-screen">
+<div class="max-w-xl mx-auto py-10">
+    <a href="/" class="text-blue-600 hover:underline">&larr; Back to Dashboard</a>
+    <h1 class="text-3xl font-bold mb-2 text-blue-700 mt-2">{{ habit.name }}</h1>
+    <div class="mb-2 text-gray-600">Type: <span class="font-semibold">{{ habit.type|capitalize }}</span></div>
+    <div class="mb-2 text-gray-600">Started: <span class="font-semibold">{{ habit.start_date }}</span></div>
+    <div class="mb-2 text-gray-600">Target: <span class="font-semibold">{{ habit.target }}</span></div>
+    {% if habit.notes %}
+    <div class="mb-4 text-gray-400 text-xs">{{ habit.notes }}</div>
+    {% endif %}
+    <div class="bg-white p-4 rounded-lg shadow mb-6">
+        <div class="font-semibold text-xs text-gray-500 mb-1">Consistency Chart</div>
+        <div id="heatmap" class="mb-2"></div>
+    </div>
+    <div class="bg-white p-4 rounded-lg shadow mb-6">
+        <div class="font-semibold text-xs text-gray-500 mb-1">Progression</div>
+        <div id="progression-chart" style="height:200px;"></div>
+    </div>
+    <div class="bg-white p-4 rounded-lg shadow mb-6">
+        <div class="font-semibold text-xs text-gray-500 mb-1">Streaks & Stats</div>
+        <div id="streaks"></div>
+    </div>
+    <div class="bg-white p-4 rounded-lg shadow mb-6">
+        <div class="font-semibold text-xs text-gray-500 mb-1">Logs</div>
+        <div class="text-xs text-gray-700">Completed: {{ habit.logs|length }} days</div>
+        {% if habit.failures %}
+        <div class="text-xs text-red-500">Failed: {{ habit.failures|length }} days</div>
+        {% endif %}
+    </div>
+    <div class="bg-white p-4 rounded-lg shadow mb-6">
+        <div class="font-semibold text-xs text-gray-500 mb-1">Milestones</div>
+        {% if milestones %}
+            <ul class="list-disc ml-6 text-green-600 text-sm">
+            {% for m in milestones %}
+                <li>{{ m }}</li>
+            {% endfor %}
+            </ul>
+        {% else %}
+            <div class="text-gray-400 text-xs">No milestones yet.</div>
+        {% endif %}
+    </div>
+    <div class="bg-white p-4 rounded-lg shadow mb-6">
+        <div class="font-semibold text-xs text-gray-500 mb-1">Weekly Summary</div>
+        <div class="text-xs text-gray-700">
+            {% for (year, week), count in weekly.items() %}
+                <span class="inline-block mr-2 mb-1 bg-blue-100 text-blue-700 px-2 py-1 rounded">Week {{ week }}, {{ year }}: <span class="font-bold">{{ count }}</span></span>
+            {% endfor %}
+        </div>
+    </div>
+    <div class="bg-white p-4 rounded-lg shadow mb-6">
+        <div class="font-semibold text-xs text-gray-500 mb-1">Monthly Summary</div>
+        <div class="text-xs text-gray-700">
+            {% for (year, month), count in monthly.items() %}
+                <span class="inline-block mr-2 mb-1 bg-purple-100 text-purple-700 px-2 py-1 rounded">{{ year }}-{{ '%02d' % month }}: <span class="font-bold">{{ count }}</span></span>
+            {% endfor %}
+        </div>
+    </div>
+    <div class="bg-white p-4 rounded-lg shadow mb-6">
+        <div class="font-semibold text-xs text-gray-500 mb-1">Journal</div>
+        <form method="post" action="/habit/{{ habit.id }}/journal" class="mb-2">
+            <textarea name="journal_entry" class="w-full border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400" rows="2" placeholder="Write your reflection for today...">{{ habit.journal["now"|date("%Y-%m-%d")] if habit.journal and ("now"|date("%Y-%m-%d") in habit.journal) }}</textarea>
+            <button type="submit" class="mt-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-1 px-4 rounded shadow">Save</button>
+        </form>
+        <div class="text-xs text-gray-700">
+            <div class="font-semibold mb-1">Recent Entries:</div>
+            {% if habit.journal %}
+                <ul class="list-disc ml-6">
+                {% for date, entry in habit.journal|dictsort(true)[:7] %}
+                    <li><span class="text-gray-400">{{ date }}:</span> {{ entry }}</li>
+                {% endfor %}
+                </ul>
+            {% else %}
+                <div class="text-gray-400">No entries yet.</div>
+            {% endif %}
+        </div>
+    </div>
+    <div class="bg-white p-4 rounded-lg shadow mb-6">
+        <div class="font-semibold text-xs text-gray-500 mb-1 flex items-center gap-2">Full-Year Calendar Heatmap <span title="Yearly view of completions"><svg class="w-5 h-5 text-green-500 inline-block" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" stroke-width="2" fill="none"/><path stroke-linecap="round" stroke-linejoin="round" d="M3 9h18"/></svg></span></div>
+        <div id="calendar-heatmap" style="height:180px;"></div>
+    </div>
+</div>
+<script>
+function getDaysArray(start, end) {
+    for(var arr=[],dt=new Date(start); dt<=end; dt.setDate(dt.getDate()+1)){
+        arr.push(new Date(dt));
+    }
+    return arr;
+}
+function renderHeatmap(containerId, logs, startDate, failures) {
+    const today = new Date();
+    const start = new Date(startDate);
+    const days = getDaysArray(start, today);
+    const weeks = Math.ceil(days.length / 7);
+    let grid = Array.from({length: weeks}, () => Array(7).fill('untracked'));
+    logs = logs || [];
+    failures = failures || [];
+    days.forEach((date, idx) => {
+        const week = Math.floor(idx / 7);
+        const day = date.getDay();
+        const dateStr = date.toISOString().slice(0,10);
+        if (logs.includes(dateStr)) {
+            grid[week][day] = 'success';
+        } else if (failures.includes(dateStr)) {
+            grid[week][day] = 'fail';
+        }
+    });
+    let html = '<div class="flex">';
+    for (let w = 0; w < weeks; w++) {
+        html += '<div class="flex flex-col mr-1">';
+        for (let d = 0; d < 7; d++) {
+            let color = grid[w][d] === 'success' ? 'bg-green-500' : (grid[w][d] === 'fail' ? 'bg-red-500' : 'bg-yellow-300');
+            html += `<div class="w-4 h-4 m-0.5 rounded ${color}"></div>`;
+        }
+        html += '</div>';
+    }
+    html += '</div>';
+    document.getElementById(containerId).innerHTML = html;
+}
+function calcStreaks(logs, startDate) {
+    if (!logs || logs.length === 0) return {current: 0, max: 0};
+    logs = logs.slice().sort();
+    let maxStreak = 0, currentStreak = 0, prev = null;
+    for (let i = 0; i < logs.length; i++) {
+        if (prev) {
+            let diff = (new Date(logs[i]) - new Date(prev)) / (1000*60*60*24);
+            if (diff === 1) {
+                currentStreak++;
+            } else {
+                currentStreak = 1;
+            }
+        } else {
+            currentStreak = 1;
+        }
+        if (currentStreak > maxStreak) maxStreak = currentStreak;
+        prev = logs[i];
+    }
+    // Check if today is in logs for current streak
+    let todayStr = new Date().toISOString().slice(0,10);
+    if (logs[logs.length-1] !== todayStr) currentStreak = 0;
+    return {current: currentStreak, max: maxStreak};
+}
+fetch('/habit_progression/{{ habit.id }}')
+  .then(res => res.json())
+  .then(data => {
+    renderHeatmap('heatmap', data.logs, data.start_date, data.failures);
+    // Progression chart: show logs and failures
+    let allDates = (data.logs||[]).concat(data.failures||[]||[]);
+    allDates = Array.from(new Set(allDates)).sort();
+    let y = allDates.map(date => {
+      if ((data.logs||[]).includes(date)) return 1;
+      if ((data.failures||[]).includes(date)) return -1;
+      return 0;
+    });
+    Plotly.newPlot('progression-chart', [{
+      x: allDates,
+      y: y,
+      type: 'bar',
+      marker: {color: y.map(v => v > 0 ? '#22c55e' : (v < 0 ? '#ef4444' : '#a3a3a3'))}
+    }], {
+      margin: {t: 10, r: 10, l: 40, b: 40},
+      xaxis: {title: 'Date'},
+      yaxis: {title: 'Status', tickvals: [-1,0,1], ticktext: ['Failed','None','Done']},
+      plot_bgcolor: '#f3f4f6',
+      paper_bgcolor: '#f3f4f6',
+      font: {family: 'Inter, sans-serif'}
+    });
+    // Streaks
+    let streaks = calcStreaks(data.logs, data.start_date);
+    document.getElementById('streaks').innerHTML = `<div>Current Streak: <span class='font-bold text-green-600'>${streaks.current}</span> days</div><div>Max Streak: <span class='font-bold text-blue-600'>${streaks.max}</span> days</div>`;
+    // Calendar Heatmap (full year)
+    let logs = data.logs || [];
+    let year = new Date().getFullYear();
+    let days = [];
+    for (let m = 0; m < 12; m++) {
+      let daysInMonth = new Date(year, m+1, 0).getDate();
+      for (let d = 1; d <= daysInMonth; d++) {
+        let date = new Date(year, m, d);
+        let dateStr = date.toISOString().slice(0,10);
+        days.push({date: dateStr, value: logs.includes(dateStr) ? 1 : 0});
+      }
+    }
+    let z = [];
+    for (let w = 0; w < 53; w++) {
+      let week = [];
+      for (let d = 0; d < 7; d++) {
+        let idx = w*7 + d;
+        week.push(days[idx] ? days[idx].value : null);
+      }
+      z.push(week);
+    }
+    Plotly.newPlot('calendar-heatmap', [{
+      z: z,
+      type: 'heatmap',
+      colorscale: [[0, '#f3f4f6'], [1, '#22c55e']],
+      showscale: false
+    }], {
+      margin: {t: 10, r: 10, l: 10, b: 10},
+      xaxis: {showgrid: false, zeroline: false, showticklabels: false},
+      yaxis: {showgrid: false, zeroline: false, showticklabels: false},
+      plot_bgcolor: '#f3f4f6',
+      paper_bgcolor: '#f3f4f6',
+      font: {family: 'Inter, sans-serif'}
+    });
+  });
+</script>
+</body>
+</html> 

@@ -140,15 +140,7 @@
                     </div>
                     <div id="heatmap-{{ habit.id }}" class="mb-2"></div>
                     {% if habit.type == 'consistency' and habit.target and habit.logs %}
-                    {% set week_logs = [] %}
-                    {% for log in habit.logs %}
-                        {% set _year = log[:4]|int %}
-                        {% set _week = log|slice(5,2)|int %}
-                        {% if _year == current_year and _week == current_week %}
-                            {% set _ = week_logs.append(log) %}
-                        {% endif %}
-                    {% endfor %}
-                    {% set progress = (week_logs|length / (habit.target|replace('x/week','')|int if 'x/week' in habit.target else 7)) * 100 %}
+                    {% set progress = (habit.week_logs|length / (habit.target|replace('x/week','')|int if 'x/week' in habit.target else 7)) * 100 %}
                     <div class="w-full bg-gray-200 rounded h-3 mt-2">
                         <div class="bg-blue-500 h-3 rounded progress-bar" style="width: {{ progress|round(0, 'floor') }}%"></div>
                     </div>
@@ -240,22 +232,43 @@ function getDaysArray(start, end) {
 function renderHeatmap(containerId, logs, startDate, failures) {
     const today = new Date();
     const start = new Date(startDate);
+    // Always use UTC for date comparison
+    function toDateStrUTC(date) {
+        return date.getUTCFullYear() + '-' + String(date.getUTCMonth()+1).padStart(2, '0') + '-' + String(date.getUTCDate()).padStart(2, '0');
+    }
     const days = getDaysArray(start, today);
     const weeks = Math.ceil(days.length / 7);
     let grid = Array.from({length: weeks}, () => Array(7).fill('untracked'));
     logs = logs || [];
     failures = failures || [];
+    // Convert logs and failures to a Set for fast lookup, using UTC date strings
+    const logsSet = new Set((logs||[]).map(d => d));
+    const failuresSet = new Set((failures||[]).map(d => d));
     days.forEach((date, idx) => {
         const week = Math.floor(idx / 7);
-        const day = date.getDay();
-        const dateStr = date.toISOString().slice(0,10);
-        if (logs.includes(dateStr)) {
-            grid[week][day] = 'success';
-        } else if (failures.includes(dateStr)) {
-            grid[week][day] = 'fail';
+        const day = date.getUTCDay();
+        const dateStr = toDateStrUTC(date);
+        let cellType = 'untracked';
+        if (failuresSet.has(dateStr)) {
+            cellType = 'fail';
+        } else if (logsSet.has(dateStr)) {
+            cellType = 'success';
         }
+        grid[week][day] = cellType;
+        // Debug log
+        console.debug(`[Heatmap] ${containerId} - ${dateStr}: ${cellType}`);
     });
-    let html = '<div class="flex">';
+    // Log the full grid for debugging
+    console.debug(`[Heatmap] ${containerId} grid:`, grid);
+    // Add day labels
+    let html = '<div class="flex flex-col">';
+    html += '<div class="flex mb-1">';
+    const dayLabels = ['S','M','T','W','T','F','S'];
+    for (let d = 0; d < 7; d++) {
+        html += `<div class="w-4 h-4 m-0.5 text-xs text-center text-gray-400">${dayLabels[d]}</div>`;
+    }
+    html += '</div>';
+    html += '<div class="flex">';
     for (let w = 0; w < weeks; w++) {
         html += '<div class="flex flex-col mr-1">';
         for (let d = 0; d < 7; d++) {
@@ -265,6 +278,7 @@ function renderHeatmap(containerId, logs, startDate, failures) {
         }
         html += '</div>';
     }
+    html += '</div>';
     html += '</div>';
     document.getElementById(containerId).innerHTML = html;
 }

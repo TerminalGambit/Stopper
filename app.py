@@ -53,6 +53,18 @@ def dashboard():
     now = datetime.now()
     current_week = int(now.strftime('%W'))
     current_year = int(now.strftime('%Y'))
+    # Precompute week_logs for each habit
+    for habit in data['habits']:
+        week_logs = []
+        for log in habit.get('logs', []):
+            try:
+                dt = datetime.strptime(log, '%Y-%m-%d')
+                year, week, _ = dt.isocalendar()
+                if year == current_year and week == current_week:
+                    week_logs.append(log)
+            except Exception as e:
+                pass
+        habit['week_logs'] = week_logs
     return render_template('dashboard.html', habits=data['habits'], quote=quote, dark_mode=dark_mode, unlogged=unlogged, tags=tags, current_week=current_week, current_year=current_year)
 
 @app.route('/add', methods=['GET', 'POST'])
